@@ -3,15 +3,16 @@ from llama_cpp import Llama
 
 def  extract_json_from_text(text):
     start = text.find("{")
-    end   = text.rfind("}")
 
-    if start == -1 or end ==-1 or end <=start:
+
+    if start == -1 :
         return None
     
-    json_text = text[start:end+1]
+    decoder = json.JSONDecoder()
 
     try:
-        return json.loads(json_text)
+        parsed, end = decoder.raw_decode(text[start:])
+        return parsed
     except json.JSONDecodeError:
         return None
     
@@ -83,19 +84,45 @@ Response (Json only):"""
             
         return None
 
+    def decide(self,user_input,choices):
+        options = "\n".join(f"- {choice}" for choice in choices)
+
+        prompt = f"""{self.system_prompt}
+
+You must choose ONE of the following options. Respond with ONLY valid JSON.
+
+CRITICAL INSTRUCTIONS:
+1. Respond with ONLY valid JSON
+2. No explanations, no markdown, no other text
+3. Start your response with {{ and end with }}
+
+Available choices:
+{options}
+
+Required JSON format:
+{{"decision":"one_of_the_choices_above"}}
+
+User request: {user_input}
+
+Response (JSON only):"""
+        for attempt in range(3):
+            response = self.llm.generate(prompt,temperature=0.0)
+            parsed = extract_json_from_text(response)
+
+            if parsed and "decision" in parsed:
+                decison = parsed["decision"]
+
+                if decison in choices:
+                    return decison
+        
+        return None
+    
+
 agent = SimpleAgent("models/llama-3-8b-instruct.gguf")
 
-schema = """
-{
-  "topic": "string",
-  "difficulty": "beginner | intermediate | advanced"
-}
-"""
-
-result = agent.generate_structured(
-    "explain quantum computing",
-    schema
-
+decision = agent.decide(
+    "can you summarize this article for me",
+    choices=["answer_question","summarize_text","translate"]
 )
 
-print (result["topic"])
+print(decision)

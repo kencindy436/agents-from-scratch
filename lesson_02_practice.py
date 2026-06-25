@@ -35,7 +35,7 @@ class SimpleAgent:
         prompt = f"""{self.system_prompt}
 
 User: {user_input}
-Assitant:"""
+Assistant:"""
 
         response = self.llm.generate(prompt)
         return response.strip()
