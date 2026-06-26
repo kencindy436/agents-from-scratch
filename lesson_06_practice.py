@@ -1,13 +1,13 @@
 import json
 from llama_cpp import Llama
 
-
-def extract_json_from_text(text):
+def  extract_json_from_text(text):
     start = text.find("{")
 
-    if start == -1:
-        return None
 
+    if start == -1 :
+        return None
+    
     decoder = json.JSONDecoder()
 
     try:
@@ -15,26 +15,28 @@ def extract_json_from_text(text):
         return parsed
     except json.JSONDecodeError:
         return None
-
+    
 
 class LocalLLM:
     def __init__(self, model_path):
-        self.model = Llama(
+        self.llm = Llama(
             model_path=model_path,
             n_ctx=2048,
             verbose=False,
         )
 
-    def generate(self, prompt, max_tokens=256, temperature=0.7):
-        response = self.model(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop=["</s>", "User:", "Assistant:"],
-        )
+    def generate(self, prompt,temperature=None):
+        kwargs = {
+            "prompt":prompt,
+            "max_tokens":128,
+            "stop":["</s>", "\n\n", "User:", "Assistant:"],
+        }
 
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        response = self.llm(**kwargs)
         return response["choices"][0]["text"].strip()
-
 
 class AgentState:
     def __init__(self):
@@ -42,36 +44,36 @@ class AgentState:
         self.done = False
 
     def increment_step(self):
-        self.steps += 1
+        self.steps = self.steps + 1
 
     def mark_done(self):
         self.done = True
 
     def reset(self):
-        self.steps = 0
+        self.steps = 0 
         self.done = False
 
     def to_dict(self):
         return {
-            "steps": self.steps,
-            "done": self.done,
+            "steps":self.steps,
+            "done":self.done,
+
         }
-
-
+    
 class SimpleAgent:
-    def __init__(self, model_path):
+    def __init__(self,model_path):
         self.llm = LocalLLM(model_path)
         self.system_prompt = "You are a calm, precise, and helpful AI assistant."
         self.state = AgentState()
 
-    def agent_step(self, user_input):
+    def agent_step(self,user_input):
         state_dict = self.state.to_dict()
 
         prompt = f"""{self.system_prompt}
 
 You are an agent. You must decide the next action and respond with ONLY valid JSON.
 
-Current state: steps={state_dict.get("steps", 0)}, done={state_dict.get("done", False)}
+Current state: steps={state_dict.get("steps",0)}, done={state_dict.get("done",False)}
 
 Available actions: analyze, research, summarize, answer, done
 
@@ -86,10 +88,10 @@ Required JSON format:
 User input: {user_input}
 
 Response (JSON only):"""
-
+        
         for attempt in range(3):
-            response = self.llm.generate(prompt, temperature=0.0)
-            print("Raw model response:", response)
+            response = self.llm.generate(prompt,temperature=0.0)
+            print("Raw model response:",response)
 
             parsed = extract_json_from_text(response)
 
@@ -99,10 +101,9 @@ Response (JSON only):"""
 
                 self.state.increment_step()
                 return parsed
-
         return None
-
-    def run_loop(self, user_input, max_steps=5):
+    
+    def run_loop(self,user_input,max_steps=5):
         self.state.reset()
         results = []
 
@@ -112,13 +113,13 @@ Response (JSON only):"""
             if action:
                 results.append(action)
 
-                if action.get("action") == "done":
+                if action.get("actions") == "done":
                     self.state.mark_done()
+            
             else:
                 break
 
         return results
-
 
 agent = SimpleAgent("models/llama-3-8b-instruct.gguf")
 
@@ -132,4 +133,4 @@ for i, result in enumerate(results, 1):
     print(f"  Reason: {reason}")
 
     if i < len(results):
-        print()
+        print()  
