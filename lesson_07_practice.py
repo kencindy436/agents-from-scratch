@@ -1,13 +1,13 @@
 import json
 from llama_cpp import Llama
 
-
-def extract_json_from_text(text):
+def  extract_json_from_text(text):
     start = text.find("{")
 
-    if start == -1:
-        return None
 
+    if start == -1 :
+        return None
+    
     decoder = json.JSONDecoder()
 
     try:
@@ -15,7 +15,7 @@ def extract_json_from_text(text):
         return parsed
     except json.JSONDecodeError:
         return None
-
+    
 
 class LocalLLM:
     def __init__(self, model_path):
@@ -25,11 +25,11 @@ class LocalLLM:
             verbose=False,
         )
 
-    def generate(self, prompt, temperature=None):
+    def generate(self, prompt,temperature=None):
         kwargs = {
-            "prompt": prompt,
-            "max_tokens": 128,
-            "stop": ["</s>", "\n\n", "User:", "Assistant:"],
+            "prompt":prompt,
+            "max_tokens":128,
+            "stop":["</s>", "\n\n", "User:", "Assistant:"],
         }
 
         if temperature is not None:
@@ -37,7 +37,6 @@ class LocalLLM:
 
         response = self.llm(**kwargs)
         return response["choices"][0]["text"].strip()
-
 
 class AgentState:
     def __init__(self):
@@ -51,54 +50,51 @@ class AgentState:
         self.done = True
 
     def reset(self):
-        self.steps = 0
+        self.steps = 0 
         self.done = False
 
     def to_dict(self):
         return {
-            "steps": self.steps,
-            "done": self.done,
-        }
+            "steps":self.steps,
+            "done":self.done,
 
+        }
 
 class Memory:
     def __init__(self):
         self.items = []
 
-    def add(self, item):
+    def  add(self,item):
         if item and item not in self.items:
             self.items.append(item)
 
     def get_all(self):
         return self.items.copy()
-
+    
     def clear(self):
         self.items = []
 
 
+    
 class SimpleAgent:
-    def __init__(self, model_path):
+    def __init__(self,model_path):
         self.llm = LocalLLM(model_path)
-
-        self.system_prompt = (
-            "You are a calm, precise, and helpful AI assistant."
-        )
-
+        self.system_prompt = "You are a calm, precise, and helpful AI assistant."
         self.state = AgentState()
         self.memory = Memory()
 
-    def run_with_memory(self, user_input):
+    def run_with_memory(self,user_input):
         memory_context = self.memory.get_all()
 
         if memory_context:
             memory_str = (
-                "You remember the following:\n"
+                "you remember the following:\n"
                 + "\n".join(
                     f"- {item}" for item in memory_context
                 )
             )
         else:
-            memory_str = "You have no memories yet."
+            memory_str = "you have no memories yet."
 
         prompt = f"""{self.system_prompt}
 
@@ -124,17 +120,16 @@ Examples:
 - User asks "What's my name?"
   -> {{"reply": "Your name is Alice", "save_to_memory": null}}
 
-User input: {user_input}
+User input:{user_input}
 
-Response (JSON only):"""
-
+Response (JSON only)):"""
         for attempt in range(3):
             response = self.llm.generate(
                 prompt,
-                temperature=0.0,
+                temperature=0.0
             )
-
-            print("Raw model response:", response)
+        
+            print("raw model response:", response)
 
             parsed = extract_json_from_text(response)
 
@@ -146,16 +141,12 @@ Response (JSON only):"""
 
                 self.state.increment_step()
                 return parsed
-
         return None
-
-
-agent = SimpleAgent(
-    "models/llama-3-8b-instruct.gguf"
-)
+    
+agent = SimpleAgent("models/llama-3-8b-instruct.gguf")
 
 response1 = agent.run_with_memory(
-    "My name is Alice"
+    "my name is alice"
 )
 
 if response1 and "reply" in response1:
@@ -163,12 +154,12 @@ if response1 and "reply" in response1:
 
     if response1.get("save_to_memory"):
         print(
-            "Saved to memory:",
+            "Save to memory:",
             response1["save_to_memory"],
         )
-else:
-    print("Response 1:", response1)
 
+else:
+    print("Response 1:",response1)
 
 response2 = agent.run_with_memory(
     "What's my name?"
@@ -177,8 +168,9 @@ response2 = agent.run_with_memory(
 if response2 and "reply" in response2:
     print("Response 2:", response2["reply"])
 else:
-    print("Response 2:", response2)
-
-
+    print("Response 2:", response2) 
+            
 print("Memory contents:", agent.memory.get_all())
-print("Agent steps:", agent.state.steps)
+print("Agent steps:", agent.state.steps)  
+    
+
