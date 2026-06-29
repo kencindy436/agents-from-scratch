@@ -1,13 +1,13 @@
 import json
 from llama_cpp import Llama
 
-
-def extract_json_from_text(text):
+def  extract_json_from_text(text):
     start = text.find("{")
 
-    if start == -1:
-        return None
 
+    if start == -1 :
+        return None
+    
     decoder = json.JSONDecoder()
 
     try:
@@ -15,7 +15,7 @@ def extract_json_from_text(text):
         return parsed
     except json.JSONDecodeError:
         return None
-
+    
 
 class LocalLLM:
     def __init__(self, model_path):
@@ -25,11 +25,11 @@ class LocalLLM:
             verbose=False,
         )
 
-    def generate(self, prompt, temperature=None):
+    def generate(self, prompt,temperature=None):
         kwargs = {
-            "prompt": prompt,
-            "max_tokens": 512,
-            "stop": ["</s>", "\n\n", "User:", "Assistant:"],
+            "prompt":prompt,
+            "max_tokens":128,
+            "stop":["</s>", "\n\n", "User:", "Assistant:"],
         }
 
         if temperature is not None:
@@ -37,7 +37,6 @@ class LocalLLM:
 
         response = self.llm(**kwargs)
         return response["choices"][0]["text"].strip()
-
 
 class AgentState:
     def __init__(self):
@@ -48,15 +47,22 @@ class AgentState:
     def increment_step(self):
         self.steps = self.steps + 1
 
+    def mark_done(self):
+        self.done = True
+
+    def reset(self):
+        self.steps = 0 
+        self.done = False
+
     def to_dict(self):
         return {
-            "steps": self.steps,
-            "done": self.done,
+            "steps":self.steps,
+            "done":self.done,
             "current_plan": self.current_plan,
+
         }
 
-
-def create_plan(llm, goal):
+def create_plan(llm,goal):
     prompt = f"""Create a step-by-step plan to achieve the goal.
 
 CRITICAL INSTRUCTIONS:
@@ -67,36 +73,36 @@ CRITICAL INSTRUCTIONS:
 Required JSON format:
 {{"steps": ["step1", "step2", "step3"]}}
 
-Goal: {goal}
+Goal:{goal}
 
 Response (JSON only):"""
-
+    
     for attempt in range(3):
         response = llm.generate(
             prompt,
             temperature=0.0,
         )
 
-        print("Raw model response:", response)
+        print("raw model response:",response)
 
         plan = extract_json_from_text(response)
 
-        if (
+        if(
             plan
             and "steps" in plan
-            and isinstance(plan["steps"], list)
+            and isinstance(plan["steps"],list)
         ):
             return plan
-
+        
     return None
 
 
 class SimpleAgent:
-    def __init__(self, model_path):
+    def __init__(self,model_path):
         self.llm = LocalLLM(model_path)
         self.state = AgentState()
 
-    def create_plan(self, goal):
+    def create_plan(self,goal):
         plan = create_plan(
             self.llm,
             goal,
@@ -106,11 +112,11 @@ class SimpleAgent:
             self.state.current_plan = plan
 
         return plan
-
-    def execute_plan(self, plan):
+    
+    def execute_plan(self,plan):
         if not plan or "steps" not in plan:
-            return []
-
+            return[]
+        
         results = []
 
         for step in plan["steps"]:
@@ -123,10 +129,9 @@ class SimpleAgent:
             self.state.increment_step()
 
         return results
-
-
+    
 agent = SimpleAgent(
-    "models/llama-3-8b-instruct.gguf"
+        "models/llama-3-8b-instruct.gguf"
 )
 
 goal = "Write a blog post about AI agents"
@@ -140,10 +145,10 @@ if plan:
 
     print("Execution results:")
 
-    for index, result in enumerate(results, 1):
+    for index, result in enumerate(results,1):
         print(
-            f"Step {index}:",
+            f"Step{index}:",
             result,
         )
 
-print("Agent state:", agent.state.to_dict())
+print("Agent state:",agent.state.to_dict())
