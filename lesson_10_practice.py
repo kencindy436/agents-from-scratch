@@ -1,14 +1,13 @@
 import json
-
 from llama_cpp import Llama
 
-
-def extract_json_from_text(text):
+def  extract_json_from_text(text):
     start = text.find("{")
 
-    if start == -1:
-        return None
 
+    if start == -1 :
+        return None
+    
     decoder = json.JSONDecoder()
 
     try:
@@ -16,7 +15,7 @@ def extract_json_from_text(text):
         return parsed
     except json.JSONDecodeError:
         return None
-
+    
 
 class LocalLLM:
     def __init__(self, model_path):
@@ -26,53 +25,51 @@ class LocalLLM:
             verbose=False,
         )
 
-    def generate(self, prompt, temperature=None):
+    def generate(self, prompt,temperature=None):
         kwargs = {
-            "prompt": prompt,
-            "max_tokens": 256,
-            "stop": ["</s>", "User:", "Assistant:"],
+            "prompt":prompt,
+            "max_tokens":128,
+            "stop":["</s>", "\n\n", "User:", "Assistant:"],
         }
 
         if temperature is not None:
             kwargs["temperature"] = temperature
 
         response = self.llm(**kwargs)
-
         return response["choices"][0]["text"].strip()
-
 
 def validate_graph(graph):
     if not graph:
         return False
-
-    if "nodes" not in graph:
+    
+    if"nodes" not in graph:
         return False
-
-    if not isinstance(graph["nodes"], list):
+    
+    if not isinstance(graph["nodes"],list):
         return False
-
+    
     node_ids = set()
 
     # 第一次检查：节点结构及编号
     for node in graph["nodes"]:
-        if not isinstance(node, dict):
+        if not isinstance(node,dict):
             return False
-
+        
         if "id" not in node:
             return False
-
+        
         if "action" not in node:
             return False
-
+        
         if "depends_on" not in node:
             return False
-
-        if not isinstance(node["depends_on"], list):
+        
+        if not isinstance(node["depends_on"],list):
             return False
-
+        
         if node["id"] in node_ids:
             return False
-
+        
         node_ids.add(node["id"])
 
     # 第二次检查：依赖编号是否真实存在
@@ -80,9 +77,8 @@ def validate_graph(graph):
         for dependency in node["depends_on"]:
             if dependency not in node_ids:
                 return False
-
+            
     return True
-
 
 def create_aot_graph(llm, goal):
     prompt = f"""Create an atomic execution graph for the goal.
@@ -120,27 +116,26 @@ Goal:
 {goal}
 
 Response (JSON only):"""
-
+    
     for attempt in range(3):
         response = llm.generate(
             prompt,
             temperature=0.0,
         )
 
-        print("Raw graph response:", response)
+        print("raw graph response:", response)
 
         graph = extract_json_from_text(response)
 
         if validate_graph(graph):
             return graph
-
+        
     return None
 
-
-def execute_graph(graph, executor_func):
+def execute_graph(graph,executor_func):
     if not validate_graph(graph):
         return []
-
+    
     nodes = graph["nodes"]
 
     # 保存已经执行完成的节点编号
@@ -157,7 +152,7 @@ def execute_graph(graph, executor_func):
         len(executed) < len(nodes)
         and iteration < max_iterations
     ):
-        iteration += 1
+        iteration = iteration + 1
 
         for node in nodes:
             node_id = node["id"]
@@ -186,8 +181,8 @@ def execute_graph(graph, executor_func):
                     results.append({
                         "node_id": node_id,
                         "action": node["action"],
-                        "result": result,
-                        "success": True,
+                        "result":result,
+                        "success":True,
                     })
 
                     executed.add(node_id)
@@ -204,18 +199,17 @@ def execute_graph(graph, executor_func):
 
     return results
 
-
 class SimpleAgent:
-    def __init__(self, model_path):
+    def __init__(self,model_path):
         self.llm = LocalLLM(model_path)
 
-    def create_aot_plan(self, goal):
+    def create_aot_plan(self,goal):
         return create_aot_graph(
             self.llm,
             goal,
         )
-
-    def execute_aot_plan(self, graph):
+    
+    def execute_aot_plan(self,graph):
         def execute_action(action):
             # 这里只是模拟执行，还没有调用真实工具
             return f"Executed: {action}"
@@ -224,8 +218,7 @@ class SimpleAgent:
             graph,
             execute_action,
         )
-
-
+    
 agent = SimpleAgent(
     "models/llama-3-8b-instruct.gguf"
 )
@@ -241,9 +234,12 @@ if graph:
     # Python 根据依赖关系执行节点
     results = agent.execute_aot_plan(graph)
 
-    print("Execution results:")
+    print("execution results:")
 
-    for index, result in enumerate(results, 1):
-        print(f"Result {index}:", result)
+    for index,result in enumerate(results,1):
+        print(f"result {index}:",result)
+
 else:
-    print("Graph generation failed.")
+    print("graph generation failed.")
+
+
