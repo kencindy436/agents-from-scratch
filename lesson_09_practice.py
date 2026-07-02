@@ -1,13 +1,13 @@
 import json
 from llama_cpp import Llama
 
-
-def extract_json_from_text(text):
+def  extract_json_from_text(text):
     start = text.find("{")
 
-    if start == -1:
-        return None
 
+    if start == -1 :
+        return None
+    
     decoder = json.JSONDecoder()
 
     try:
@@ -15,7 +15,7 @@ def extract_json_from_text(text):
         return parsed
     except json.JSONDecodeError:
         return None
-
+    
 
 class LocalLLM:
     def __init__(self, model_path):
@@ -25,25 +25,23 @@ class LocalLLM:
             verbose=False,
         )
 
-    def generate(self, prompt, temperature=None):
+    def generate(self, prompt,temperature=None):
         kwargs = {
-            "prompt": prompt,
-            "max_tokens": 512,
-            "stop": ["</s>", "\n\n", "User:", "Assistant:"],
+            "prompt":prompt,
+            "max_tokens":128,
+            "stop":["</s>", "\n\n", "User:", "Assistant:"],
         }
 
         if temperature is not None:
             kwargs["temperature"] = temperature
 
         response = self.llm(**kwargs)
-
         return response["choices"][0]["text"].strip()
 
-
-def generate_plan(llm, goal):
+def generate_plan(llm,goal):
     prompt = f"""Create a step-by-step plan to achieve the goal.
 
-CRITICAL INSTRUCTIONS:
+   CRITICAL INSTRUCTIONS:
 1. Respond with ONLY valid JSON
 2. No explanations, no markdown, no other text
 3. Start your response with {{ and end with }}
@@ -51,7 +49,8 @@ CRITICAL INSTRUCTIONS:
 Required JSON format:
 {{"steps": ["step1", "step2", "step3"]}}
 
-Goal: {goal}
+Goal:
+{goal}
 
 Response (JSON only):"""
 
@@ -61,21 +60,20 @@ Response (JSON only):"""
             temperature=0.0,
         )
 
-        print("Raw plan response:", response)
+        print("raw plan response:",response)
 
         plan = extract_json_from_text(response)
 
         if (
             plan
             and "steps" in plan
-            and isinstance(plan["steps"], list)
+            and isinstance(plan["steps"],list)
         ):
             return plan
-
+    
     return None
 
-
-def generate_atomic_action(llm, step):
+def generate_atomic_action(llm,step):
     prompt = f"""Convert this step into an atomic action.
 
 CRITICAL INSTRUCTIONS:
@@ -90,84 +88,70 @@ Required JSON format:
 }}
 
 The action should be a simple, atomic operation name.
-The inputs should be a dictionary containing the parameters needed
-for the action.
+The inputs should contain the parameters needed for the action.
 
 Step to convert:
 {step}
 
 Response (JSON only):"""
-
+    
     for attempt in range(3):
         response = llm.generate(
             prompt,
             temperature=0.0,
         )
 
-        print("Raw atomic action response:", response)
+        print("raw atomic action response:",response)
 
         action = extract_json_from_text(response)
 
-        if (
+        if(
             action
             and "action" in action
             and "inputs" in action
-            and isinstance(action["inputs"], dict)
+            and isinstance(action["inputs"],dict)
         ):
             return action
-
     return None
 
-
 class SimpleAgent:
-    def __init__(self, model_path):
+    def __init__(self,model_path):
         self.llm = LocalLLM(model_path)
 
-    def create_plan(self, goal):
+    def create_plan(self,goal):
         return generate_plan(
             self.llm,
             goal,
-        )
 
-    def create_atomic_action(self, step):
+        )
+    
+    def create_atomic_action(self,step):
         return generate_atomic_action(
             self.llm,
             step,
+
         )
-
-
+    
 agent = SimpleAgent(
     "models/llama-3-8b-instruct.gguf"
 )
 
-
-# 第一部分：直接转换一个模糊步骤
-step = "Write an explanation of AI agents"
-
-atomic_action = agent.create_atomic_action(step)
-
-print("\nDirect step:", step)
-print("Atomic action:", atomic_action)
-
-
-# 第二部分：先生成计划
 goal = "Create a tutorial about Python"
 
+# 第一次调用模型：根据目标生成计划
 plan = agent.create_plan(goal)
 
-print("\nGoal:", goal)
 print("Plan:", plan)
 
-
-# 第三部分：取出计划中的第一步，再转换成原子动作
-if plan and "steps" in plan and plan["steps"]:
+if plan and plan["steps"]:
+    # Python 从整个计划中取出第一步
     first_step = plan["steps"][0]
 
-    action_from_plan = agent.create_atomic_action(
-        first_step
-    )
+    print("First step:", first_step)
 
-    print("\nFirst plan step:", first_step)
-    print("Atomic action from plan:", action_from_plan)
+    # 第二次调用模型：把第一步转换成原子动作
+    atomic_action = agent.create_atomic_action(first_step)
+
+    print("Atomic action:", atomic_action)
 else:
-    print("No valid plan was generated.")
+    print("Plan generation failed.")
