@@ -14,8 +14,7 @@ DECISION_GOLDEN = [
     },
 ]
 
-
-def evaluate_decisions(agent, cases):
+def evaluate_decisions(agent,cases):
     results = []
     passed_count = 0
     failed_count = 0
@@ -29,9 +28,9 @@ def evaluate_decisions(agent, cases):
         error = None
 
         if actual is None:
-            error = "No decision made"
+            error = "no decisions made"
         elif actual != case["expected"]:
-            error = "Wrong decision"
+            error = "wrong decision"
 
         passed = error is None
 
@@ -39,8 +38,8 @@ def evaluate_decisions(agent, cases):
             "passed": passed,
             "input": case["input"],
             "expected": case["expected"],
-            "actual": actual,
-            "error": error,
+            "actual":actual,
+            "error":error,
         }
 
         results.append(result)
@@ -56,13 +55,12 @@ def evaluate_decisions(agent, cases):
         "results": results,
     }
 
-
 def print_report(report):
     print("\nDECISION EVAL REPORT")
     print("=" * 40)
 
     for result in report["results"]:
-        status = "PASSED" if result["passed"] else "FAILED"
+        status = "passed" if result["passed"] else "failed"
 
         print(f"\n{status}")
         print("Input:", result["input"])
@@ -70,12 +68,11 @@ def print_report(report):
         print("Actual:", result["actual"])
 
         if result["error"]:
-            print("Error:", result["error"])
+            print("Error:",result["error"])
 
     print("\n" + "-" * 40)
     print("Passed:", report["passed"])
     print("Failed:", report["failed"])
-
 
 agent = Agent("models/llama-3-8b-instruct.gguf")
 
