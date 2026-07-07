@@ -1,8 +1,8 @@
 import json
 import time
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict,dataclass
+from datetime import datetime,timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,13 +13,13 @@ class Span:
     trace_id: str
     event_type: str
     timestamp: str
-    duration_ms: float
-    data: dict
+    duration_ms:float
+    data:dict
     error: str | None = None
 
     def to_dict(self):
         return asdict(self)
-
+    
 
 @dataclass
 class Metrics:
@@ -31,13 +31,13 @@ class Metrics:
     def success_rate(self):
         if self.total_operations == 0:
             return 0.0
-
+        
         return (
             self.successful_operations
             / self.total_operations
             * 100
         )
-
+    
     def to_dict(self):
         return {
             "total_operations": self.total_operations,
@@ -49,7 +49,7 @@ class Metrics:
 
 
 class Telemetry:
-    def __init__(self, log_file):
+    def __init__(self,log_file):
         self.log_file = Path(log_file)
         self.current_trace_id = None
         self.spans = []
@@ -58,8 +58,8 @@ class Telemetry:
     def start_trace(self):
         self.current_trace_id = str(uuid4())
         return self.current_trace_id
-
-    def save_span(self, span):
+    
+    def save_span(self,span):
         self.spans.append(span)
 
         with self.log_file.open(
@@ -96,10 +96,10 @@ class Telemetry:
         try:
             result = operation()
             return result
-
+        
         except Exception as exception:
             error = (
-                f"{type(exception).__name__}: "
+                f"{type(exception).__name__}:"
                 f"{exception}"
             )
 
@@ -118,7 +118,7 @@ class Telemetry:
             span_data["result"] = result
 
             span = Span(
-                span_id=span_id,
+                span_id = span_id,
                 trace_id=self.current_trace_id,
                 event_type=event_type,
                 timestamp=timestamp,
@@ -130,12 +130,12 @@ class Telemetry:
             self.save_span(span)
 
             self.metrics.total_operations += 1
-            self.metrics.total_duration_ms += duration_ms
+            self.metrics.total_duration_ms +=duration_ms
 
             if error is None:
                 self.metrics.successful_operations += 1
             else:
-                self.metrics.failed_operations += 1
+                self.metrics.failed_operations +=1
 
     def clear(self):
         self.spans = []
@@ -156,11 +156,11 @@ class Telemetry:
             )
         )
 
-
+    
 def fake_llm_call():
     time.sleep(0.2)
 
-    return (
+    return(
         "An AI agent observes, decides, "
         "and takes actions."
     )
@@ -177,7 +177,7 @@ def broken_tool():
 
 
 telemetry = Telemetry(
-    "lesson_12_telemetry.jsonl"
+      "lesson_12_telemetry.jsonl"
 )
 
 telemetry.clear()
@@ -233,3 +233,4 @@ print("\nSaved spans:")
 
 for span in telemetry.spans:
     print(span.to_dict())
+    
