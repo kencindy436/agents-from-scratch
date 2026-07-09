@@ -5,8 +5,8 @@
 - 日期：2026-07-09
 - 手敲练习代码：`/Users/cuiyuqi/agent/full_agent_practice.py`
 - 参考代码：`/Users/cuiyuqi/agent/test.py`
-- 当前阶段：Stage 2 参考代码已完成；手敲文件正在跟进 Stage 2
-- 验证结果：`test.py` 已通过 Python 语法编译检查；模型推理运行由学习者手动执行
+- 当前阶段：Stage 3 参考代码已完成；手敲文件由学习者继续跟进
+- 验证结果：`test.py` 已通过 Python 语法编译检查；纯 Python 工具层验证通过；完整模型推理运行由学习者手动执行
 
 ## 整合目标
 
@@ -137,6 +137,94 @@ Python 提取 JSON
 Python 校验 dict / key / value
 ↓
 返回可被程序继续使用的数据
+```
+
+## Stage 3 新增内容
+
+Stage 3 对应 Lesson 05：Tools。目标是让 Agent 不只生成文本，还能请求 Python 工具执行具体动作。
+
+新增整体结构：
+
+```text
+用户问题
+→ request_tool()
+→ LLM 输出工具调用 JSON
+→ extract_json_from_text()
+→ Python 得到 tool_call dict
+→ execute_tool_call()
+→ execute_tool()
+→ calculator()
+→ 返回真实计算结果
+```
+
+新增工具函数：
+
+- `calculator(a, b, operation="add")`：真正执行加、减、乘、除。
+- `execute_tool(tool_name, arguments)`：根据工具名找到对应 Python 函数，并把参数字典拆成函数参数执行。
+
+新增 Agent 方法：
+
+- `request_tool(user_input)`：让模型根据用户输入生成工具调用请求。
+- `execute_tool_call(tool_call)`：把模型请求的工具调用交给 Python 执行。
+
+模型应该输出类似：
+
+```json
+{"tool": "calculator", "arguments": {"a": 42, "b": 7, "operation": "multiply"}}
+```
+
+Stage 3 最重要的边界：
+
+```text
+LLM 负责：选择工具名、生成参数 JSON
+Python 负责：校验工具名、执行真实函数、返回真实结果
+```
+
+也就是说，模型不是在自己计算 `42 * 7`，而是在请求：
+
+```text
+请调用 calculator，参数是 a=42, b=7, operation=multiply
+```
+
+真正得到 `294` 的地方是 Python 的 `calculator()`。
+
+## Stage 3 验证方式
+
+当前 `test.py` 中有两层验证。
+
+第一层：固定工具调用，不经过模型。
+
+```python
+fixed_tool_call = {
+    "tool": "calculator",
+    "arguments": {
+        "a": 42,
+        "b": 7,
+        "operation": "multiply",
+    },
+}
+
+fixed_tool_result = agent.execute_tool_call(fixed_tool_call)
+assert fixed_tool_result == 294
+```
+
+这一步验证 Python 工具层是否正常。
+
+第二层：让模型请求工具。
+
+```python
+tool_call = agent.request_tool("What is 42 * 7?")
+tool_result = agent.execute_tool_call(tool_call)
+assert tool_result == 294
+```
+
+这一步验证模型是否能按要求输出工具调用 JSON，以及 Python 是否能执行它。
+
+调试时优先看第一层：
+
+```text
+固定工具调用失败 → Python 工具层有问题
+固定工具调用成功，但 request_tool 失败 → prompt、模型输出或 JSON 解析有问题
 ```
 
 ## 初始化与生成
@@ -372,6 +460,112 @@ parsed["decision"] in choices
 需要语言表达的部分：保持开放
 ```
 
+### 工具调用
+
+工具调用不是让模型直接执行能力，而是让模型输出一个结构化请求。
+
+```json
+{
+  "tool": "calculator",
+  "arguments": {
+    "a": 42,
+    "b": 7,
+    "operation": "multiply"
+  }
+}
+```
+
+这个 JSON 进入 Python 后会变成 dict：
+
+```python
+{
+    "tool": "calculator",
+    "arguments": {
+        "a": 42,
+        "b": 7,
+        "operation": "multiply",
+    },
+}
+```
+
+Python 再用：
+
+```python
+execute_tool(tool_call["tool"], tool_call["arguments"])
+```
+
+真正执行对应工具。
+
+### `tools` 字典
+
+```python
+tools = {
+    "calculator": calculator,
+}
+```
+
+这里的 value 可以是函数本身。`tools["calculator"]` 取出来的就是 `calculator` 函数对象。
+
+所以：
+
+```python
+tools[tool_name](**arguments)
+```
+
+可以理解成：
+
+```python
+calculator(a=42, b=7, operation="multiply")
+```
+
+### `lambda`
+
+```python
+"multiply": lambda x, y: x * y
+```
+
+`lambda` 是匿名小函数，适合写很短的运算逻辑。上面这一行等价于：
+
+```python
+def multiply(x, y):
+    return x * y
+```
+
+### `**arguments`
+
+如果：
+
+```python
+arguments = {
+    "a": 42,
+    "b": 7,
+    "operation": "multiply",
+}
+```
+
+那么：
+
+```python
+calculator(**arguments)
+```
+
+等价于：
+
+```python
+calculator(a=42, b=7, operation="multiply")
+```
+
+### 工具边界
+
+工具名必须封闭，因为 Python 只能执行已经注册过的函数。
+
+```python
+if tool_name not in tools:
+    raise ValueError(f"Unknown tool: {tool_name}")
+```
+
+这一步是安全边界：模型不能随便发明一个工具名并让 Python 执行。
+
 ### 程序入口
 
 ```python
@@ -432,6 +626,23 @@ assert result
 10. `full_agent_practice.py` 报缩进错误怎么办？
     - Python 同一函数内部代码必须对齐。`prompt = ...` 和 `return ...` 都属于同一个函数体时，应保持同一缩进层级。
 
+## Stage 3 过程中需要重点理解的问题
+
+1. 工具函数是模型生成的吗？
+   - 不是。工具函数由 Python 提前定义，例如 `calculator()`。
+2. 模型生成的是什么？
+   - 模型生成工具调用请求，例如 `{"tool": "calculator", "arguments": {...}}`。
+3. `arguments` 是什么？
+   - 它是传给工具函数的参数字典，后续通过 `**arguments` 拆成关键字参数。
+4. `tools` 字典为什么能存函数？
+   - Python 中函数也是对象，可以作为 value 存入字典。
+5. 为什么要先测 `fixed_tool_call`？
+   - 它不经过模型，能单独验证 Python 工具层是否正常。
+6. 为什么工具名要校验？
+   - 因为模型输出不可信，Python 只允许执行已经注册的工具。
+7. Stage 3 和 MCP 像在哪里？
+   - 思路类似：模型提出结构化工具请求，外部系统负责真实执行。但当前版本是本地 Python 函数，不是完整 MCP 协议。
+
 ## 当前边界
 
 当前阶段已经验证：
@@ -441,11 +652,13 @@ assert result
 - 模型响应能够被提取为字符串。
 - `SimpleAgent` 能够通过 `LocalLLM` 调用模型。
 - `test.py` 中 Stage 2 的新增代码通过语法编译检查。
+- `test.py` 中 Stage 3 的工具层通过非模型验证：`execute_tool("calculator", ...) == 294`。
 
 当前阶段尚未实现：
 
 - `full_agent_practice.py` 中 Stage 2 需要由学习者继续手敲、运行和调试。
-- 工具调用和 Agent Loop。
+- `full_agent_practice.py` 中 Stage 3 需要由学习者继续手敲、运行和调试。
+- Agent Loop。
 - State、Memory、Plan、Atomic Action、AoT。
 - Telemetry 接入真实 Agent 流程。
 - Golden Eval 和完整自动化测试。
@@ -471,23 +684,27 @@ assert result
 8. `None`、`False`、空字符串和空字典的含义有什么区别？
 9. 为什么封闭动作要限制选项，而开放回答不能枚举所有答案？
 10. `dict → prompt 字符串 → LLM 输出字符串 → dict` 这条链路如何描述？
+11. LLM 请求工具和 Python 执行工具分别发生在哪个函数里？
+12. `tools[tool_name](**arguments)` 展开后是什么样子？
+13. 如果 `fixed_tool_call` 成功但 `request_tool()` 失败，应该优先检查哪里？
+14. 为什么不能直接相信模型输出的工具名？
 
 ## 本次提交建议
 
 中文 commit message 可选：
 
 ```bash
-git commit -m "练习：补充结构化输出和决策选择"
+git commit -m "练习：补充 Agent 工具调用参考实现"
 ```
 
 如果这次只提交文档，不提交代码：
 
 ```bash
-git commit -m "文档：记录完整 Agent 练习第二阶段"
+git commit -m "文档：记录完整 Agent 练习第三阶段"
 ```
 
 如果同时提交 `test.py` 和学习笔记：
 
 ```bash
-git commit -m "学习：整理 Agent 结构化输出与决策流程"
+git commit -m "学习：整理 Agent 工具调用流程"
 ```

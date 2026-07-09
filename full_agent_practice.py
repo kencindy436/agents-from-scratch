@@ -17,6 +17,31 @@ def extract_json_from_text(text):
     except json.JSONDecodeError:
         return None
 
+
+def calculator(a, b, operation="add"):
+    operations = {
+        "add": lambda x, y: x + y,
+        "subtract": lambda x, y: x - y,
+        "multiply": lambda x, y: x * y,
+        "divide": lambda x, y: x / y if y != 0 else float("inf"),
+    }
+
+    if operation not in operations:
+        raise ValueError(f"Unknown operation: {operation}")
+
+    return operations[operation](a, b)
+
+
+def execute_tool(tool_name, arguments):
+    tools = {
+        "calculator": calculator,
+    }
+
+    if tool_name not in tools:
+        raise ValueError(f"Unknown tool: {tool_name}")
+
+    return tools[tool_name](**arguments)
+
 class LocalLLM:
     def __init__(
         self,
@@ -75,7 +100,6 @@ class SimpleAgent:
             "AI assistant."
         )
     
-
     def simple_generate(self, user_input):
         return self.llm.generate(user_input)
     
@@ -153,6 +177,54 @@ Response (JSON only):"""
                 return parsed["decision"]
 
         return None
+    
+    def request_tool(self, user_input):
+        prompt = f"""{self.system_prompt}
+
+You are a tool-calling assistant. When a user asks a math question,
+respond with ONLY valid JSON that requests the correct tool.
+
+Available tool:
+calculator
+- arguments:
+  - a: number
+  - b: number
+  - operation: "add" | "subtract" | "multiply" | "divide"
+
+CRITICAL INSTRUCTIONS:
+1. Respond with ONLY valid JSON
+2. No explanations, no markdown, no other text
+3. Start your response with {{ and end with }}
+
+Example format:
+{{"tool": "calculator", "arguments": {{"a": 42, "b": 7, "operation": "multiply"}}}}
+
+User request: {user_input}
+
+Response (JSON only):"""
+
+        for _ in range(3):
+            response = self.llm.generate(
+                prompt,
+                temperature=0.0,
+                stop=["</s>", "User:", "Assistant:"],
+            )
+            parsed = extract_json_from_text(response)
+
+            if (
+                isinstance(parsed, dict)
+                and parsed.get("tool") == "calculator"
+                and isinstance(parsed.get("arguments"), dict)
+            ):
+                return parsed
+
+        return None
+    
+    def execute_tool_call(self, tool_call):
+        return execute_tool(
+            tool_call["tool"],
+            tool_call["arguments"],
+        ) 
 
 if __name__ == "__main__":
     agent = SimpleAgent(
@@ -206,6 +278,29 @@ if __name__ == "__main__":
 
     assert decision_result == "translate"
 
+    fixed_tool_call = {
+        "tool": "calculator",
+        "arguments": {
+            "a": 42,
+            "b": 7,
+            "operation": "multiply",
+        },
+    }
+
+    fixed_tool_result = agent.execute_tool_call(fixed_tool_call)
+
+    assert fixed_tool_result == 294
+
+    tool_call = agent.request_tool("What is 42 * 7?")
+
+    assert isinstance(tool_call, dict)
+    assert tool_call["tool"] == "calculator"
+    assert isinstance(tool_call["arguments"], dict)
+
+    tool_result = agent.execute_tool_call(tool_call)
+
+    assert tool_result == 294
+
     print("Simple result:")
     print(simple_result)
 
@@ -217,3 +312,12 @@ if __name__ == "__main__":
 
     print("\nDecision result:")
     print(decision_result)
+
+    print("\nFixed tool result:")
+    print(fixed_tool_result)
+
+    print("\nTool request:")
+    print(tool_call)
+
+    print("\nTool result:")
+    print(tool_result)
