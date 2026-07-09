@@ -149,6 +149,8 @@ Response (JSON only):"""
         prompt = f"""{self.system_prompt}
 
 You must choose ONE option from the available choices.
+Choose "use_tool" for arithmetic, calculation, or math questions.
+Choose "answer_question" for explanations, definitions, or general knowledge questions.
 Respond with ONLY valid JSON.
 
 Available choices:
@@ -226,6 +228,50 @@ Response (JSON only):"""
             tool_call["arguments"],
         ) 
 
+    def run(self,user_input):
+        decision = self.decide(
+            user_input,
+            [
+                "answer_question",
+                "use_tool",
+            ],
+        )
+
+        if decision == "use_tool":
+            tool_call = self.request_tool(user_input)
+
+            if tool_call is None:
+                return {
+                    "type": "error",
+                    "decision": decision,
+                    "message": "could not create a valid tool call.",
+                }
+            
+            tool_result = self.execute_tool_call(tool_call)
+
+            return {
+                "type": "tool_result",
+                "decision": decision,
+                "tool_call": tool_call,
+                "result": tool_result,
+            }
+
+        if decision == "answer_question":
+            answer = self.generate_with_role(user_input)
+
+            return {
+                "type": "answer",
+                "decision": decision,
+                "result": answer,
+            }
+
+        return {
+            "type": "error",
+            "decision": decision,
+            "message": "could not decide which action to take.",
+        }
+    
+
 if __name__ == "__main__":
     agent = SimpleAgent(
         "models/llama-3-8b-instruct.gguf"
@@ -301,6 +347,16 @@ if __name__ == "__main__":
 
     assert tool_result == 294
 
+    math_run_result = agent.run("What is 42 * 7?")
+
+
+    print("DEBUG math_run_result:", math_run_result)
+
+    assert isinstance(math_run_result, dict)
+    assert math_run_result["type"] == "tool_result"
+    assert math_run_result["decision"] == "use_tool"
+    assert math_run_result["result"] == 294
+
     print("Simple result:")
     print(simple_result)
 
@@ -321,3 +377,6 @@ if __name__ == "__main__":
 
     print("\nTool result:")
     print(tool_result)
+
+    print("\nRun result:")
+    print(math_run_result)

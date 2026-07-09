@@ -5,8 +5,8 @@
 - 日期：2026-07-09
 - 手敲练习代码：`/Users/cuiyuqi/agent/full_agent_practice.py`
 - 参考代码：`/Users/cuiyuqi/agent/test.py`
-- 当前阶段：Stage 3 参考代码已完成；手敲文件由学习者继续跟进
-- 验证结果：`test.py` 已通过 Python 语法编译检查；纯 Python 工具层验证通过；完整模型推理运行由学习者手动执行
+- 当前阶段：Stage 4A 参考代码已完成；手敲文件由学习者继续跟进
+- 验证结果：`test.py` 已通过 Python 语法编译检查；`run()` 调度入口存在；纯 Python 工具层验证通过；完整模型推理运行由学习者手动执行
 
 ## 整合目标
 
@@ -226,6 +226,83 @@ assert tool_result == 294
 固定工具调用失败 → Python 工具层有问题
 固定工具调用成功，但 request_tool 失败 → prompt、模型输出或 JSON 解析有问题
 ```
+
+## Stage 4A 新增内容
+
+Stage 4A 是最小自动调度层，目标是解决一个关键问题：
+
+```text
+之前：人类手动选择调用哪个函数
+现在：run(user_input) 根据输入自动选择能力
+```
+
+新增方法：
+
+```python
+def run(self, user_input):
+    ...
+```
+
+它不是新的模型能力，而是一个 Python 调度入口。它会先调用 `decide()` 判断任务类型，再用 Python `if` 分支调用已有能力。
+
+Stage 4A 的核心流程：
+
+```text
+用户输入
+→ run(user_input)
+→ decide(user_input, ["answer_question", "use_tool"])
+→ 如果 decision == "use_tool"
+    → request_tool(user_input)
+    → execute_tool_call(tool_call)
+    → 返回 tool_result
+→ 如果 decision == "answer_question"
+    → generate_with_role(user_input)
+    → 返回 answer
+→ 如果无法判断
+    → 返回 error dict
+```
+
+这里 `run()` 返回 dict，而不是只返回字符串或数字，是为了让学习者能看到中间调度信息：
+
+```python
+{
+    "type": "tool_result",
+    "decision": "use_tool",
+    "tool_call": tool_call,
+    "result": 294,
+}
+```
+
+这样能清楚区分：
+
+```text
+decision：模型判断要做什么
+tool_call：模型请求哪个工具和参数
+result：Python 工具执行后的真实结果
+```
+
+## Stage 4A 与 Stage 4B 的区别
+
+Stage 4A 只做一次自动调度：
+
+```text
+observe → decide → act → return
+```
+
+Stage 4B 才会做正式循环：
+
+```text
+observe → decide → act → update state → repeat
+```
+
+也就是说：
+
+```text
+Stage 4A：解决“怎么自动选择功能”
+Stage 4B：解决“怎么多步执行并记录状态”
+```
+
+不要把 `run()` 和 `run_loop()` 混在一起。`run()` 是单次入口；`run_loop()` 是多步循环入口。
 
 ## 初始化与生成
 
@@ -642,6 +719,35 @@ assert result
    - 因为模型输出不可信，Python 只允许执行已经注册的工具。
 7. Stage 3 和 MCP 像在哪里？
    - 思路类似：模型提出结构化工具请求，外部系统负责真实执行。但当前版本是本地 Python 函数，不是完整 MCP 协议。
+8. `operation="add"` 是什么意思？
+   - 这是函数参数默认值。调用 `calculator(a, b)` 时如果不传 `operation`，Python 会默认使用 `"add"`。
+9. 除法里的 `else` 是什么意思？
+   - `x / y if y != 0 else float("inf")` 是条件表达式，意思是如果 `y` 不是 0 就返回 `x / y`，否则返回无穷大 `inf`，避免除以 0 报错。
+10. `return operations[operation](a, b)` 怎么理解？
+    - `operations` 是“动作名 → 函数”的字典。`operation` 是传入的动作名，例如 `"multiply"`。`operations[operation]` 先取出对应函数，再用 `(a, b)` 调用它，最后 `return` 计算结果。
+11. `operations` 明明是 dict，为什么里面能做运算？
+    - dict 本身不做运算；它只是保存函数。真正做运算的是 dict 里取出来的 `lambda` 函数。
+12. `arguments` 是谁提供的？
+    - 在真实工具调用流程中，`arguments` 来自 LLM 输出的 JSON，经过 Python 解析后变成 dict。在固定测试里，也可以由 Python 手写。
+13. `**arguments` 是把 dict 转成字符串吗？
+    - 不是。它是把 dict 拆成函数关键字参数，例如 `{"a": 42, "b": 7, "operation": "multiply"}` 会展开成 `a=42, b=7, operation="multiply"`。
+14. 为什么写了很多函数后，还不会自动根据 user input 触发？
+    - 因为目前只是“能力集合”，仍然需要人类主动调用某个函数。要让程序自动识别并应用能力，需要再加一层调度入口，例如 `run(user_input)`。
+15. Stage 4 要解决什么问题？
+    - Stage 4 要从“人类手动选择函数”升级到“程序先观察输入，再决策，再行动”，也就是第一版 `observe → decide → act` 调度流程。
+
+## Stage 4A 过程中需要重点理解的问题
+
+1. `run()` 和前面的函数有什么不同？
+   - 前面的函数是单项能力；`run()` 是调度入口，负责先判断该用哪个能力，再调用对应函数。
+2. `run()` 中的 `decision` 是谁生成的？
+   - 它来自 `decide()`，也就是模型根据用户输入和 Python 提供的 choices 生成的选择结果。
+3. `run()` 为什么还需要 Python `if`？
+   - 模型只负责输出 decision，Python 才负责真正执行分支，调用 `request_tool()` 或 `generate_with_role()`。
+4. `run()` 是否就是完整 Agent Loop？
+   - 不是。它只执行一次 `observe → decide → act`。完整 loop 还需要 state、max_steps、done 和重复执行。
+5. 为什么 `run()` 返回 dict？
+   - 因为 dict 能同时保存调度类型、decision、tool_call、result 或 error，方便调试和学习数据流。
 
 ## 当前边界
 
@@ -653,12 +759,14 @@ assert result
 - `SimpleAgent` 能够通过 `LocalLLM` 调用模型。
 - `test.py` 中 Stage 2 的新增代码通过语法编译检查。
 - `test.py` 中 Stage 3 的工具层通过非模型验证：`execute_tool("calculator", ...) == 294`。
+- `test.py` 中 Stage 4A 的 `run()` 调度入口已通过结构检查。
 
 当前阶段尚未实现：
 
 - `full_agent_practice.py` 中 Stage 2 需要由学习者继续手敲、运行和调试。
 - `full_agent_practice.py` 中 Stage 3 需要由学习者继续手敲、运行和调试。
-- Agent Loop。
+- `full_agent_practice.py` 中 Stage 4A 需要由学习者继续手敲、运行和调试。
+- 正式多步 Agent Loop。
 - State、Memory、Plan、Atomic Action、AoT。
 - Telemetry 接入真实 Agent 流程。
 - Golden Eval 和完整自动化测试。
@@ -667,10 +775,11 @@ assert result
 
 1. Stage 2：加入 `generate_with_role()`、`generate_structured()` 和 `decide()`。
 2. Stage 3：加入工具注册、工具请求和工具执行。
-3. Stage 4：加入 `AgentState`、循环和 Memory。
-4. Stage 5：加入 Plan、Atomic Action 和 AoT 依赖图。
-5. Stage 6：接入自写 Telemetry，记录 LLM、工具、记忆和错误 Span。
-6. Stage 7：编写 Eval cases，验证决策、工具、记忆和失败路径。
+3. Stage 4A：加入 `run()` 最小自动调度入口。
+4. Stage 4B：加入 `AgentState` 和正式多步 `run_loop()`。
+5. Stage 5：加入 Memory。
+6. Stage 6：加入 Plan、Atomic Action 和 AoT 依赖图。
+7. Stage 7：接入自写 Telemetry 和 Eval cases。
 
 ## 复习问题
 
@@ -688,23 +797,26 @@ assert result
 12. `tools[tool_name](**arguments)` 展开后是什么样子？
 13. 如果 `fixed_tool_call` 成功但 `request_tool()` 失败，应该优先检查哪里？
 14. 为什么不能直接相信模型输出的工具名？
+15. `run()` 解决了 Stage 3 之后的哪个问题？
+16. `run()` 为什么仍然需要 Python `if decision == ...`？
+17. Stage 4A 和正式 Agent Loop 的区别是什么？
 
 ## 本次提交建议
 
 中文 commit message 可选：
 
 ```bash
-git commit -m "练习：补充 Agent 工具调用参考实现"
+git commit -m "练习：补充 Agent 自动调度入口"
 ```
 
 如果这次只提交文档，不提交代码：
 
 ```bash
-git commit -m "文档：记录完整 Agent 练习第三阶段"
+git commit -m "文档：记录完整 Agent 练习第四阶段调度"
 ```
 
 如果同时提交 `test.py` 和学习笔记：
 
 ```bash
-git commit -m "学习：整理 Agent 工具调用流程"
+git commit -m "学习：整理 Agent 自动调度流程"
 ```
