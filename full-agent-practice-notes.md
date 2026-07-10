@@ -749,6 +749,243 @@ assert result
 5. 为什么 `run()` 返回 dict？
    - 因为 dict 能同时保存调度类型、decision、tool_call、result 或 error，方便调试和学习数据流。
 
+## Stage 4A 真实调试案例
+
+运行 `full_agent_practice.py` 时出现断言失败：
+
+```text
+assert math_run_result["type"] == "tool_result"
+AssertionError
+```
+
+加入调试输出：
+
+```python
+print("DEBUG math_run_result:", math_run_result)
+```
+
+实际输出：
+
+```python
+{
+    "type": "answer",
+    "decision": "answer_question",
+    "result": "Easy one!",
+}
+```
+
+这说明：
+
+```text
+run("What is 42 * 7?")
+→ decide()
+→ 模型选择了 answer_question
+→ run() 进入普通回答分支
+→ generate_with_role()
+→ 模型输出自由文本 "Easy one!"
+```
+
+所以问题不是：
+
+```text
+calculator 写错
+execute_tool_call 写错
+tool_result 取值写错
+```
+
+而是：
+
+```text
+decide() 路由错了
+```
+
+根因是：当前 `decide()` 的 prompt 只要求模型从 `answer_question` 和 `use_tool` 里选一个，但没有明确规定：
+
+```text
+数学计算题必须选择 use_tool
+解释、定义、概念类问题选择 answer_question
+```
+
+因此模型把 `What is 42 * 7?` 当成普通问题，选择了 `answer_question`。
+
+调试这类问题的顺序：
+
+```text
+1. 看失败的 assert 行，判断哪个预期不成立
+2. 看前一个 assert 是否通过，缩小数据类型问题
+3. 打印实际变量值，例如 math_run_result
+4. 判断 type 是 answer、tool_result 还是 error
+5. 顺着数据流向上定位：run → decide → request_tool → execute_tool_call
+```
+
+常见定位结论：
+
+```text
+type == "answer"
+→ decide() 把任务路由到了普通回答
+
+type == "error", decision == None
+→ decide() 没有输出合法 decision
+
+type == "error", decision == "use_tool"
+→ request_tool() 没有生成合法 tool_call
+
+type == "tool_result", result != 294
+→ 工具参数或工具执行有问题
+```
+
+本次优化方向：
+
+```text
+优化 routing prompt / decision schema / eval case
+```
+
+最小 prompt 改进：
+
+```text
+Choose "use_tool" for arithmetic, calculation, or math questions.
+Choose "answer_question" for explanations, definitions, or general knowledge questions.
+```
+
+这次案例说明：优化 agent 能力时，不只是看模型回答聪不聪明，而是要分层检查：
+
+```text
+路由是否正确
+输出格式是否稳定
+工具参数是否正确
+Python 执行是否安全
+状态是否记录
+错误是否可诊断
+eval 是否稳定通过
+```
+
+本次问题属于第一类：路由不正确。
+
+## Stage 4B：最小 Agent Loop
+
+Stage 4A 的 `run()` 只执行一次：
+
+```text
+observe -> decide -> act -> return
+```
+
+Stage 4B 加入 `AgentState` 和 `run_loop()` 后，流程变成：
+
+```text
+observe -> decide -> update state -> repeat -> stop
+```
+
+### 新增组件
+
+`AgentState` 保存三项状态：
+
+```python
+self.steps = 0
+self.done = False
+self.last_action = None
+```
+
+- `steps`：已经产生了多少个合法 action。
+- `done`：任务是否被标记为完成。
+- `last_action`：最近一个合法 action 字典。
+
+`agent_step(user_input)` 只执行一轮：
+
+```text
+读取 state
+-> 拼接 prompt
+-> 调用 LLM
+-> 提取 JSON
+-> 校验 action
+-> 更新 state
+-> 返回 action dict
+```
+
+`run_loop(user_input, max_steps)` 负责：
+
+```text
+重置 state
+-> 重复调用 agent_step()
+-> 把 action 加入 results
+-> 检查 done
+-> 检查 max_steps
+-> 返回 results list
+```
+
+### 什么叫做“一步”
+
+当前 Stage 4B 中，一步是模型生成一个合法 action，并由 Python 记录这次
+action。它不是完成整个任务，也还没有真正执行 `research`、`answer` 或工具。
+
+例如：
+
+```python
+{
+    "action": "analyze",
+    "reason": "First understand the task",
+}
+```
+
+这表示模型建议下一步进行分析。Python 会把它加入 `results`，同时把
+`steps` 加一。
+
+### 模型和 Python 的职责边界
+
+模型生成：
+
+```text
+action
+reason
+```
+
+Python 负责：
+
+```text
+解析 JSON
+校验 action 是否属于允许范围
+更新 steps 和 last_action
+判断 done
+限制 max_steps
+保存 results
+```
+
+### 为什么需要两个停止条件
+
+模型主动返回：
+
+```python
+{"action": "done", "reason": "The task is complete"}
+```
+
+此时 Python 调用 `mark_done()`，正常结束循环。
+
+如果模型一直不返回 `done`，`max_steps` 会作为安全上限强制停止，避免无限
+循环和持续消耗计算资源。
+
+### 如何测试循环而不依赖模型随机性
+
+可以使用脚本化 LLM，提前固定两次响应：
+
+```text
+第 1 次：analyze
+第 2 次：done
+```
+
+这样能单独验证 Python 是否正确更新状态和停止循环。真实本地模型测试则用来
+观察实际 action，但不应该断言固定的 action 顺序，因为模型输出具有概率性。
+
+### Stage 4B 的限制
+
+当前 action 只是建议，没有真实执行能力：
+
+```text
+research 不会真的联网搜索
+answer 不会自动生成最终回答
+use_tool 不会在循环中调用计算器
+```
+
+Stage 4C 再把工具结果作为 observation 反馈给下一轮循环。
+
 ## 当前边界
 
 当前阶段已经验证：
@@ -760,14 +997,16 @@ assert result
 - `test.py` 中 Stage 2 的新增代码通过语法编译检查。
 - `test.py` 中 Stage 3 的工具层通过非模型验证：`execute_tool("calculator", ...) == 294`。
 - `test.py` 中 Stage 4A 的 `run()` 调度入口已通过结构检查。
+- `test.py` 已加入最小 `AgentState`、`agent_step()` 和 `run_loop()` 参考实现。
+- Stage 4B 已通过脚本化响应验证 `done` 和 `max_steps` 两种停止条件。
 
 当前阶段尚未实现：
 
 - `full_agent_practice.py` 中 Stage 2 需要由学习者继续手敲、运行和调试。
 - `full_agent_practice.py` 中 Stage 3 需要由学习者继续手敲、运行和调试。
 - `full_agent_practice.py` 中 Stage 4A 需要由学习者继续手敲、运行和调试。
-- 正式多步 Agent Loop。
-- State、Memory、Plan、Atomic Action、AoT。
+- `full_agent_practice.py` 中的 Stage 4B 仍需要学习者亲自手敲和运行。
+- Memory、Plan、Atomic Action、AoT。
 - Telemetry 接入真实 Agent 流程。
 - Golden Eval 和完整自动化测试。
 
@@ -800,6 +1039,10 @@ assert result
 15. `run()` 解决了 Stage 3 之后的哪个问题？
 16. `run()` 为什么仍然需要 Python `if decision == ...`？
 17. Stage 4A 和正式 Agent Loop 的区别是什么？
+18. `AgentState` 中的 `steps`、`done` 和 `last_action` 各自保存什么？
+19. 为什么 `agent_step()` 只在 action 校验通过后才增加 `steps`？
+20. `done` 和 `max_steps` 分别解决哪一种停止问题？
+21. 为什么 Stage 4B 不断言模型必须输出固定的 action 顺序？
 
 ## 本次提交建议
 

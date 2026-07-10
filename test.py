@@ -43,6 +43,31 @@ def execute_tool(tool_name, arguments):
     return tools[tool_name](**arguments)
 
 
+class AgentState:
+    def __init__(self):
+        self.steps = 0
+        self.done = False
+        self.last_action = None
+
+    def increment_step(self):
+        self.steps += 1
+
+    def mark_done(self):
+        self.done = True
+
+    def reset(self):
+        self.steps = 0
+        self.done = False
+        self.last_action = None
+
+    def to_dict(self):
+        return {
+            "steps": self.steps,
+            "done": self.done,
+            "last_action": self.last_action,
+        }
+
+
 class LocalLLM:
     def __init__(
         self,
@@ -95,6 +120,7 @@ class LocalLLM:
 class SimpleAgent:
     def __init__(self, model_path):
         self.llm = LocalLLM(model_path)
+        self.state = AgentState()
 
         self.system_prompt = (
             "You are a calm, precise, and helpful "
@@ -149,6 +175,8 @@ Response (JSON only):"""
         prompt = f"""{self.system_prompt}
 
 You must choose ONE option from the available choices.
+Choose "use_tool" for arithmetic, calculation, or math questions.
+Choose "answer_question" for explanations, definitions, or general knowledge questions.
 Respond with ONLY valid JSON.
 
 Available choices:
@@ -225,6 +253,88 @@ Response (JSON only):"""
             tool_call["tool"],
             tool_call["arguments"],
         )
+
+    def agent_step(self, user_input):
+        allowed_actions = [
+            "analyze",
+            "research",
+            "summarize",
+            "answer",
+            "done",
+        ]
+        state_dict = self.state.to_dict()
+
+        prompt = f"""{self.system_prompt}
+
+You are an agent. Decide the next action based on the user input and current state.
+Respond with ONLY valid JSON.
+
+Current state:
+- steps: {state_dict.get("steps", 0)}
+- done: {state_dict.get("done", False)}
+- last_action: {state_dict.get("last_action")}
+
+Available actions:
+- analyze
+- research
+- summarize
+- answer
+- done
+
+CRITICAL INSTRUCTIONS:
+1. Respond with ONLY valid JSON
+2. No explanations, no markdown, no other text
+3. Start your response with {{ and end with }}
+
+Required JSON format:
+{{"action": "action_name", "reason": "explanation"}}
+
+User input: {user_input}
+
+Response (JSON only):"""
+
+        for _ in range(3):
+            response = self.llm.generate(
+                prompt,
+                temperature=0.0,
+                stop=["</s>", "User:", "Assistant:"],
+            )
+            parsed = extract_json_from_text(response)
+
+            if (
+                isinstance(parsed, dict)
+                and parsed.get("action") in allowed_actions
+            ):
+                if "reason" not in parsed:
+                    parsed["reason"] = (
+                        f"Taking action: {parsed['action']}"
+                    )
+
+                self.state.last_action = parsed
+                self.state.increment_step()
+                return parsed
+
+        return None
+
+    def run_loop(self, user_input, max_steps=5):
+        self.state.reset()
+        results = []
+
+        while (
+            not self.state.done
+            and self.state.steps < max_steps
+        ):
+            action = self.agent_step(user_input)
+
+            if action is None:
+                break
+
+            results.append(action)
+
+            if action.get("action") == "done":
+                self.state.mark_done()
+
+        return results
 
     def run(self, user_input):
         decision = self.decide(
@@ -352,6 +462,29 @@ if __name__ == "__main__":
     assert math_run_result["decision"] == "use_tool"
     assert math_run_result["result"] == 294
 
+    loop_results = agent.run_loop(
+        "Help me understand agent loops.",
+        max_steps=3,
+    )
+
+    allowed_loop_actions = {
+        "analyze",
+        "research",
+        "summarize",
+        "answer",
+        "done",
+    }
+
+    assert isinstance(loop_results, list)
+    assert loop_results
+    assert len(loop_results) <= 3
+    assert all(
+        isinstance(result, dict)
+        and result.get("action") in allowed_loop_actions
+        for result in loop_results
+    )
+    assert agent.state.steps == len(loop_results)
+
     print("Simple result:")
     print(simple_result)
 
@@ -375,3 +508,13 @@ if __name__ == "__main__":
 
     print("\nRun result:")
     print(math_run_result)
+
+    print("\nAgent loop results:")
+
+    for index, result in enumerate(loop_results, 1):
+        print(f"Iteration {index}:")
+        print(f"  Action: {result.get('action')}")
+        print(f"  Reason: {result.get('reason')}")
+
+    print("\nFinal agent state:")
+    print(agent.state.to_dict())
