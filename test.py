@@ -48,6 +48,8 @@ class AgentState:
         self.steps = 0
         self.done = False
         self.last_action = None
+        self.observations = []
+        self.final_answer = None
 
     def increment_step(self):
         self.steps += 1
@@ -59,12 +61,16 @@ class AgentState:
         self.steps = 0
         self.done = False
         self.last_action = None
+        self.observations = []
+        self.final_answer = None
 
     def to_dict(self):
         return {
             "steps": self.steps,
             "done": self.done,
             "last_action": self.last_action,
+            "observations": self.observations.copy(),
+            "final_answer": self.final_answer,
         }
 
 
@@ -336,6 +342,155 @@ Response (JSON only):"""
 
         return results
 
+    def answer_from_observation(
+        self,
+        user_input,
+        observation,
+    ):
+        prompt = f"""{self.system_prompt}
+
+Answer the original user request using the trusted tool observation below.
+Use the exact tool result. Do not recalculate or change it.
+
+Original user request: {user_input}
+Tool observation: {observation}
+
+Final answer:"""
+
+        return self.llm.generate(
+            prompt,
+            temperature=0.0,
+        )
+
+    def tool_agent_step(self, user_input):
+        if self.state.done:
+            return None
+
+        if self.state.observations:
+            observation = self.state.observations[-1]
+            answer = self.answer_from_observation(
+                user_input,
+                observation,
+            )
+
+            if not answer:
+                step_result = {
+                    "action": "error",
+                    "error": "Could not generate a final answer.",
+                }
+            else:
+                step_result = {
+                    "action": "final_answer",
+                    "answer": answer,
+                }
+                self.state.final_answer = answer
+
+            self.state.last_action = step_result
+            self.state.increment_step()
+            self.state.mark_done()
+            return step_result
+
+        decision = self.decide(
+            user_input,
+            [
+                "answer_question",
+                "use_tool",
+            ],
+        )
+
+        if decision is None:
+            step_result = {
+                "action": "error",
+                "error": "Could not decide which action to take.",
+            }
+            self.state.last_action = step_result
+            self.state.increment_step()
+            self.state.mark_done()
+            return step_result
+
+        if decision == "answer_question":
+            answer = self.generate_with_role(user_input)
+
+            if not answer:
+                step_result = {
+                    "action": "error",
+                    "error": "Could not generate a final answer.",
+                }
+            else:
+                step_result = {
+                    "action": "final_answer",
+                    "answer": answer,
+                }
+                self.state.final_answer = answer
+
+            self.state.last_action = step_result
+            self.state.increment_step()
+            self.state.mark_done()
+            return step_result
+
+        tool_call = self.request_tool(user_input)
+
+        if tool_call is None:
+            step_result = {
+                "action": "error",
+                "error": "Could not create a valid tool call.",
+            }
+            self.state.last_action = step_result
+            self.state.increment_step()
+            self.state.mark_done()
+            return step_result
+
+        try:
+            tool_result = self.execute_tool_call(tool_call)
+        except Exception as error:
+            step_result = {
+                "action": "error",
+                "error": (
+                    f"{type(error).__name__}: {error}"
+                ),
+            }
+            self.state.last_action = step_result
+            self.state.increment_step()
+            self.state.mark_done()
+            return step_result
+
+        observation = {
+            "tool": tool_call["tool"],
+            "arguments": tool_call["arguments"],
+            "result": tool_result,
+        }
+        self.state.observations.append(observation)
+
+        step_result = {
+            "action": "use_tool",
+            "tool_call": tool_call,
+            "observation": observation,
+        }
+        self.state.last_action = step_result
+        self.state.increment_step()
+        return step_result
+
+    def run_tool_loop(
+        self,
+        user_input,
+        max_steps=3,
+    ):
+        self.state.reset()
+        results = []
+
+        while (
+            not self.state.done
+            and self.state.steps < max_steps
+        ):
+            step_result = self.tool_agent_step(user_input)
+
+            if step_result is None:
+                break
+
+            results.append(step_result)
+
+        return results
+
     def run(self, user_input):
         decision = self.decide(
             user_input,
@@ -380,7 +535,96 @@ Response (JSON only):"""
         }
 
 
+def run_stage_4c_deterministic_checks():
+    class ScriptedLLM:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+
+        def generate(
+            self,
+            prompt,
+            temperature=None,
+            stop=None,
+        ):
+            return next(self.responses)
+
+    def make_agent(responses):
+        agent = object.__new__(SimpleAgent)
+        agent.llm = ScriptedLLM(responses)
+        agent.state = AgentState()
+        agent.system_prompt = "Test agent"
+        return agent
+
+    loop_agent = make_agent([
+        '{"decision": "use_tool"}',
+        (
+            '{"tool": "calculator", "arguments": '
+            '{"a": 42, "b": 7, '
+            '"operation": "multiply"}}'
+        ),
+        "42 multiplied by 7 is 294.",
+    ])
+
+    results = loop_agent.run_tool_loop(
+        "What is 42 * 7?",
+        max_steps=3,
+    )
+
+    assert len(results) == 2
+    assert results[0]["action"] == "use_tool"
+    assert results[0]["observation"]["result"] == 294
+    assert results[1]["action"] == "final_answer"
+    assert "294" in results[1]["answer"]
+    assert loop_agent.state.steps == 2
+    assert loop_agent.state.done is True
+    assert (
+        loop_agent.state.final_answer
+        == results[1]["answer"]
+    )
+
+    route_error_agent = make_agent([
+        "not json",
+        "still not json",
+        "invalid again",
+    ])
+
+    route_error_results = (
+        route_error_agent.run_tool_loop(
+            "What is 42 * 7?",
+            max_steps=3,
+        )
+    )
+
+    assert len(route_error_results) == 1
+    assert route_error_results[0]["action"] == "error"
+    assert route_error_agent.state.done is True
+
+    argument_error_agent = make_agent([
+        '{"decision": "use_tool"}',
+        (
+            '{"tool": "calculator", '
+            '"arguments": {"a": 42}}'
+        ),
+    ])
+
+    argument_error_results = (
+        argument_error_agent.run_tool_loop(
+            "What is 42 * 7?",
+            max_steps=3,
+        )
+    )
+
+    assert len(argument_error_results) == 1
+    assert argument_error_results[0]["action"] == "error"
+    assert "TypeError" in argument_error_results[0]["error"]
+    assert argument_error_agent.state.done is True
+
+    print("Stage 4C deterministic checks passed")
+
+
 if __name__ == "__main__":
+    run_stage_4c_deterministic_checks()
+
     agent = SimpleAgent(
         "models/llama-3-8b-instruct.gguf"
     )
@@ -485,6 +729,33 @@ if __name__ == "__main__":
     )
     assert agent.state.steps == len(loop_results)
 
+    loop_state = agent.state.to_dict()
+
+    tool_loop_results = agent.run_tool_loop(
+        "What is 42 * 7?",
+        max_steps=3,
+    )
+
+    assert len(tool_loop_results) == 2
+    assert tool_loop_results[0]["action"] == "use_tool"
+    assert (
+        tool_loop_results[0]["observation"]["result"]
+        == 294
+    )
+    assert (
+        tool_loop_results[1]["action"]
+        == "final_answer"
+    )
+    assert "294" in tool_loop_results[1]["answer"]
+    assert agent.state.steps == 2
+    assert agent.state.done is True
+    assert (
+        agent.state.final_answer
+        == tool_loop_results[1]["answer"]
+    )
+
+    tool_loop_state = agent.state.to_dict()
+
     print("Simple result:")
     print(simple_result)
 
@@ -517,4 +788,16 @@ if __name__ == "__main__":
         print(f"  Reason: {result.get('reason')}")
 
     print("\nFinal agent state:")
-    print(agent.state.to_dict())
+    print(loop_state)
+
+    print("\nTool feedback loop results:")
+
+    for index, result in enumerate(
+        tool_loop_results,
+        1,
+    ):
+        print(f"Iteration {index}:")
+        print(result)
+
+    print("\nFinal tool loop state:")
+    print(tool_loop_state)

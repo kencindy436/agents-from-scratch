@@ -986,6 +986,124 @@ use_tool 不会在循环中调用计算器
 
 Stage 4C 再把工具结果作为 observation 反馈给下一轮循环。
 
+## Stage 4C：工具执行与 Observation 反馈
+
+Stage 4B 只记录模型提出的 action：
+
+```text
+user input -> action -> state -> repeat
+```
+
+Stage 4C 把真实工具执行结果加入循环：
+
+```text
+user input
+-> decide use_tool
+-> model creates tool_call
+-> Python executes calculator
+-> observation stores result 294
+-> model reads observation
+-> final_answer
+-> Python mark_done()
+```
+
+### 新增状态
+
+```python
+self.observations = []
+self.final_answer = None
+```
+
+- `observations` 保存真实执行产生的数据，不是模型自己想象的结果。
+- `final_answer` 保存基于 observation 生成的最终回答。
+- `reset()` 开始新任务时必须同时清空这两项。
+
+### Observation 是什么
+
+工具执行成功后，Python 形成：
+
+```python
+{
+    "tool": "calculator",
+    "arguments": {
+        "a": 42,
+        "b": 7,
+        "operation": "multiply",
+    },
+    "result": 294,
+}
+```
+
+其中 `result: 294` 来自 Python 调用计算器，不是 LLM 生成。这个字典被加入
+`state.observations`，下一轮再放进 prompt。
+
+### 三个新增方法
+
+```text
+answer_from_observation()
+-> 用原始问题和 observation 生成最终自然语言答案
+
+tool_agent_step()
+-> 没有 observation 时执行工具
+-> 已有 observation 时生成 final_answer
+
+run_tool_loop()
+-> 重置状态、重复工具单步、收集结果并停止
+```
+
+### 为什么 Python 控制 done
+
+当模型已经基于 observation 生成最终答案后，Python 直接调用：
+
+```python
+self.state.mark_done()
+```
+
+不再让模型额外猜一次是否应该输出 `done`。模型负责语言与有限决策，Python
+负责状态转换和终止条件，因此流程更稳定。
+
+### Stage 4B 与 Stage 4C 对比
+
+```text
+Stage 4B:
+模型提出 analyze
+-> Python 只记录
+-> 没有新 observation
+-> 容易重复 analyze
+
+Stage 4C:
+模型提出 use_tool
+-> Python 真正执行
+-> 得到 observation
+-> 模型基于新信息回答
+-> Python 标记 done
+```
+
+### 确定性测试
+
+`test.py` 中的 `run_stage_4c_deterministic_checks()` 使用预设响应：
+
+```text
+1. {"decision": "use_tool"}
+2. calculator tool_call
+3. "42 multiplied by 7 is 294."
+```
+
+它通过 `object.__new__(SimpleAgent)` 创建不加载 GGUF 的测试对象，然后替换成
+`ScriptedLLM`。这样测试的是 Python 数据流，而不是本地模型的随机表现。
+
+测试覆盖：
+
+- 正常的两步工具闭环；
+- 路由连续三次输出无效格式；
+- 计算器缺少必要参数而触发 `TypeError`；
+- `max_steps` 与 `done` 停止条件。
+
+### Stage 4C 边界
+
+当前只支持一个计算器调用。通用工具 schema、多次工具调用、搜索、文件操作和
+长期记忆仍不属于本阶段。
+
 ## 当前边界
 
 当前阶段已经验证：
@@ -999,6 +1117,8 @@ Stage 4C 再把工具结果作为 observation 反馈给下一轮循环。
 - `test.py` 中 Stage 4A 的 `run()` 调度入口已通过结构检查。
 - `test.py` 已加入最小 `AgentState`、`agent_step()` 和 `run_loop()` 参考实现。
 - Stage 4B 已通过脚本化响应验证 `done` 和 `max_steps` 两种停止条件。
+- `test.py` 已加入 Stage 4C 工具反馈循环和确定性测试。
+- Stage 4C 已验证工具结果 `294` 能进入 observation 并生成 final answer。
 
 当前阶段尚未实现：
 
@@ -1006,6 +1126,7 @@ Stage 4C 再把工具结果作为 observation 反馈给下一轮循环。
 - `full_agent_practice.py` 中 Stage 3 需要由学习者继续手敲、运行和调试。
 - `full_agent_practice.py` 中 Stage 4A 需要由学习者继续手敲、运行和调试。
 - `full_agent_practice.py` 中的 Stage 4B 仍需要学习者亲自手敲和运行。
+- `full_agent_practice.py` 中的 Stage 4C 仍需要学习者亲自手敲和运行。
 - Memory、Plan、Atomic Action、AoT。
 - Telemetry 接入真实 Agent 流程。
 - Golden Eval 和完整自动化测试。
@@ -1016,9 +1137,10 @@ Stage 4C 再把工具结果作为 observation 反馈给下一轮循环。
 2. Stage 3：加入工具注册、工具请求和工具执行。
 3. Stage 4A：加入 `run()` 最小自动调度入口。
 4. Stage 4B：加入 `AgentState` 和正式多步 `run_loop()`。
-5. Stage 5：加入 Memory。
-6. Stage 6：加入 Plan、Atomic Action 和 AoT 依赖图。
-7. Stage 7：接入自写 Telemetry 和 Eval cases。
+5. Stage 4C：执行真实工具并把结果反馈为 observation。
+6. Stage 5：加入 Memory，跨独立请求保存和检索信息。
+7. Stage 6：加入 Plan、Atomic Action 和 AoT 依赖图。
+8. Stage 7：接入自写 Telemetry 和 Eval cases。
 
 ## 复习问题
 
@@ -1043,6 +1165,10 @@ Stage 4C 再把工具结果作为 observation 反馈给下一轮循环。
 19. 为什么 `agent_step()` 只在 action 校验通过后才增加 `steps`？
 20. `done` 和 `max_steps` 分别解决哪一种停止问题？
 21. 为什么 Stage 4B 不断言模型必须输出固定的 action 顺序？
+22. tool result 和 observation 有什么区别与联系？
+23. 为什么 observation 中的 `294` 比模型直接计算出的文本更可信？
+24. 为什么 Stage 4C 生成 final answer 后由 Python 调用 `mark_done()`？
+25. `run_tool_loop()` 的两轮分别执行了什么？
 
 ## 本次提交建议
 
