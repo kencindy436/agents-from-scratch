@@ -74,6 +74,29 @@ class AgentState:
         }
 
 
+class Memory:
+    def __init__(self):
+        self.items = []
+
+    def add(self,item):
+        if not isinstance(item,str):
+            return
+        
+        item = item.strip()
+
+        if item and item not in self.items:
+            self.items.append(item)
+
+    def get_all(self):
+        return self.items.copy()
+
+    def clear(self):
+        self.items = []
+
+    def __len__(self):
+        return len(self.items)
+
+
 class LocalLLM:
     def __init__(
         self,
@@ -127,6 +150,7 @@ class SimpleAgent:
     def __init__(self, model_path):
         self.llm = LocalLLM(model_path)
         self.state = AgentState()
+        self.memory = Memory()
 
         self.system_prompt = (
             "You are a calm, precise, and helpful "
@@ -170,6 +194,82 @@ Response (JSON only):"""
             if isinstance(parsed, dict):
                 return parsed
             
+        return None
+    
+    def run_with_memory(self,user_input):
+        memory_items = self.memory.get_all()
+
+        if memory_items:
+            memory_text = "\n".join(
+                f"- {item}"
+                for item in memory_items
+            )
+        else:
+            memory_text = "you have no memories yet."
+
+        prompt = f"""{self.system_prompt}
+
+You are an agent with memory.
+
+Known memories:
+{memory_text}
+
+Return ONLY valid JSON.
+
+Examples:
+{{"reply": "Nice to meet you, Alice!", "save_to_memory": "User's name is Alice"}}
+{{"reply": "Your name is Alice.", "save_to_memory": null}}
+
+Rules:
+1. "reply" must contain your response to the user
+2. Save stable user facts such as names or preferences
+3. Use null when there is nothing new to remember
+4. Use known memories when answering the user
+
+User input: {user_input}
+
+Response (JSON only):"""
+        
+        for _ in range(3):
+            response = self.llm.generate(
+                prompt,
+                temperature=0.0,
+                stop=["</s>", "User:", "Assistant:"],
+            )
+
+            parsed = extract_json_from_text(response)
+
+            if not isinstance(parsed,dict):
+                continue
+            
+            reply = parsed.get("reply")
+            memory_item = parsed.get("save_to_memory")
+
+            if not isinstance(reply,str):
+                continue
+            
+            if not reply.strip():
+                continue
+
+            if (
+                memory_item is not None
+                and not isinstance(memory_item,str)
+            ):
+                continue
+
+            saved_item = None
+
+            if isinstance(memory_item, str):
+                saved_item = memory_item.strip() or None
+
+                if saved_item:
+                    self.memory.add(saved_item)
+
+            return {
+                "reply": reply.strip(),
+                "save_to_memory": saved_item,
+            }
+
         return None
     
     def decide(self,user_input,choices):
@@ -621,6 +721,132 @@ def run_stage_4c_deterministic_checks():
 
     print("Stage 4C deterministic checks passed")
 
+def run_stage_5_deterministic_checks():
+    class ScriptedLLM:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+            self.prompts = []
+
+        def generate(
+            self,
+            prompt,
+            temperature=None,
+            stop=None,
+        ):
+            self.prompts.append(prompt)
+            return next(self.responses)
+
+    def make_agent(responses):
+        agent = object.__new__(SimpleAgent)
+        agent.llm = ScriptedLLM(responses)
+        agent.state = AgentState()
+        agent.memory = Memory()
+        agent.system_prompt = "Test agent"
+        return agent
+
+    memory_agent = make_agent([
+        """
+{
+  "reply": "Nice to meet you, Alice!",
+  "save_to_memory": "User's name is Alice"
+}
+""",
+        """
+{
+  "reply": "Your name is Alice.",
+  "save_to_memory": null
+}
+""",
+    ])
+
+    first_response = memory_agent.run_with_memory(
+        "My name is Alice."
+    )
+
+    assert first_response == {
+        "reply": "Nice to meet you, Alice!",
+        "save_to_memory": "User's name is Alice",
+    }
+
+    assert memory_agent.memory.get_all() == [
+        "User's name is Alice"
+    ]
+
+    second_response = memory_agent.run_with_memory(
+        "What is my name?"
+    )
+
+    assert second_response == {
+        "reply": "Your name is Alice.",
+        "save_to_memory": None,
+    }
+
+    assert (
+        "User's name is Alice"
+        in memory_agent.llm.prompts[1]
+    )
+
+    assert memory_agent.memory.get_all() == [
+        "User's name is Alice"
+    ]
+
+    invalid_agent = make_agent([
+        "not json",
+        "still not json",
+        "[]",
+    ])
+
+    invalid_response = invalid_agent.run_with_memory(
+        "Remember this"
+    )
+
+    assert invalid_response is None
+    assert invalid_agent.memory.get_all() == []
+
+    print("Stage 5 deterministic checks passed")
+
+def run_stage_5_real_model_demo():
+    agent = SimpleAgent(
+        "models/llama-3-8b-instruct.gguf"
+    )
+
+    first_response = agent.run_with_memory(
+        "My name is Alice."
+    )
+
+    print("First response:")
+    print(first_response)
+
+    print("Memory after first response:")
+    print(agent.memory.get_all())
+
+    assert isinstance(first_response, dict)
+    assert isinstance(first_response.get("reply"), str)
+
+    assert any(
+        "alice" in item.lower()
+        for item in agent.memory.get_all()
+    )
+
+    second_response = agent.run_with_memory(
+        "What is my name?"
+    )
+
+    print("Second response:")
+    print(second_response)
+
+    print("Memory after second response:")
+    print(agent.memory.get_all())
+
+    assert isinstance(second_response, dict)
+    assert isinstance(second_response.get("reply"), str)
+
+    assert (
+        "alice"
+        in second_response["reply"].lower()
+    )
+
+    print("Stage 5 real model demo passed") 
 
 if __name__ == "__main__":
     agent = SimpleAgent(
