@@ -2,6 +2,14 @@ import json
 
 from llama_cpp import Llama
 
+DEFAULT_ALLOWED_ACTIONS = {
+    "calculate",
+    "create_file",
+    "read_text",
+    "research_topic",
+    "summarize_text",
+    "write_text",
+}
 
 def extract_json_from_text(text):
     start = text.find("{")
@@ -31,6 +39,35 @@ def validate_plan(plan):
         isinstance(step,str) and bool(step.strip())
         for step in steps
     )
+
+
+def validate_atomic_action(
+    action,
+    allowed_actions=None,
+):
+    if not isinstance(action, dict):
+        return False
+
+    action_name = action.get("action")
+    inputs = action.get("inputs")
+
+    if (
+        not isinstance(action_name, str)
+        or not action_name.strip()
+    ):
+        return False
+
+    if not isinstance(inputs, dict):
+        return False
+
+    if (
+        allowed_actions is not None
+        and action_name not in allowed_actions
+    ):
+        return False
+
+    return True
+
 
 def calculator(a, b, operation="add"):
     operations = {
@@ -169,6 +206,9 @@ class SimpleAgent:
         self.llm = LocalLLM(model_path)
         self.state = AgentState()
         self.memory = Memory()
+        self.allowed_actions = set(
+            DEFAULT_ALLOWED_ACTIONS
+        )
 
         self.system_prompt = (
             "You are a calm, precise, and helpful "
@@ -268,6 +308,59 @@ Response (JSON only):"""
             results.append(result)
         
         return results
+    
+    
+    def create_atomic_action(self,step):
+        if not isinstance(step, str) or not step.strip():
+            return None
+
+        if not self.allowed_actions:
+            return None
+
+        choices = "\n".join(
+            f"- {name}"
+            for name in sorted(self.allowed_actions)
+        )
+
+        prompt = f"""{self.system_prompt}
+
+Convert the following plan step into one atomic action.
+
+Allowed action names:
+{choices}
+
+CRITICAL INSTRUCTIONS:
+1. Respond with ONLY valid JSON
+2. Choose exactly one allowed action
+3. inputs must be a JSON object
+
+Required JSON format:
+{{"action": "one allowed action", "inputs": {{"key": "value"}}}}
+
+Plan step:
+{step}
+
+Response (JSON only):"""
+
+        for _ in range(3):
+            response = self.llm.generate(
+                prompt,
+                temperature=0.0,
+                stop=["</s>", "User:", "Assistant:"],
+            )
+
+            action = extract_json_from_text(response)
+
+            if validate_atomic_action(
+                action,
+                self.allowed_actions,
+            ):
+                return {
+                "action": action["action"].strip(),
+                "inputs": action["inputs"],
+            }
+
+        return None
     
     def run_with_memory(self,user_input):
         memory_items = self.memory.get_all()
@@ -1030,6 +1123,132 @@ def run_stage_6_real_model_demo():
     assert agent.state.steps == len(plan["steps"])
 
     print("\nStage 6 real model demo passed")
+
+def run_stage_7_deterministic_checks():
+    class ScriptedLLM:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+
+        def generate(
+            self,
+            prompt,
+            temperature=None,
+            stop=None,
+        ):
+            return next(self.responses)
+
+    def make_agent(
+        responses,
+        allowed_actions=None,
+    ):
+        agent = object.__new__(SimpleAgent)
+        agent.llm = ScriptedLLM(responses)
+        agent.state = AgentState()
+        agent.memory = Memory()
+        agent.system_prompt = "Test agent"
+
+        if allowed_actions is None:
+            allowed_actions = DEFAULT_ALLOWED_ACTIONS
+
+        agent.allowed_actions = set(allowed_actions)
+        return agent
+
+    valid_action = {
+        "action": "write_text",
+        "inputs": {
+            "topic": "AI agents",
+            "length": "short",
+        },
+    }
+
+    assert validate_atomic_action(
+        valid_action,
+        DEFAULT_ALLOWED_ACTIONS,
+    )
+
+    assert not validate_atomic_action(
+        {
+            "action": "write_text",
+            "inputs": [],
+        },
+        DEFAULT_ALLOWED_ACTIONS,
+    )
+
+    action_agent = make_agent([
+        '{"action": "delete_system", "inputs": {}}',
+        (
+            '{"action": "write_text", "inputs": '
+            '{"topic": "AI agents", "length": "short"}}'
+        ),
+    ])
+
+    action = action_agent.create_atomic_action(
+        "Write a short explanation of AI agents"
+    )
+
+    assert action == valid_action
+
+    invalid_agent = make_agent([
+        "not json",
+        "still not json",
+        '{"action": "write_text"}',
+    ])
+
+    assert (
+        invalid_agent.create_atomic_action("Write")
+        is None
+    )
+
+    deny_all_agent = make_agent(
+        [],
+        allowed_actions=set(),
+    )
+
+    assert deny_all_agent.allowed_actions == set()
+
+    assert (
+        deny_all_agent.create_atomic_action("Write")
+        is None
+    )
+
+    print("Stage 7 deterministic checks passed")
+
+def run_stage_7_real_model_demo():
+    agent = SimpleAgent(
+        "models/llama-3-8b-instruct.gguf"
+    )
+
+    plan = {
+        "steps": [
+            "Write a short explanation of AI agents",
+            "Summarize the explanation",
+        ]
+    }
+
+    first_step = plan["steps"][0]
+
+    action = agent.create_atomic_action(
+        first_step
+    )
+
+    print("Plan:")
+    print(plan)
+
+    print("\nFirst step:")
+    print(first_step)
+
+    print("\nAtomic action:")
+    print(action)
+
+    assert validate_atomic_action(
+        action,
+        agent.allowed_actions,
+    )
+
+    assert action["action"] in agent.allowed_actions
+    assert isinstance(action["inputs"], dict)
+
+    print("\nStage 7 real model demo passed")
 
 if __name__ == "__main__":
     agent = SimpleAgent(
