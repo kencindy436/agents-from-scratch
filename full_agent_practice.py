@@ -18,6 +18,20 @@ def extract_json_from_text(text):
         return None
 
 
+def validate_plan(plan):
+    if not isinstance(plan,dict):
+        return False
+    
+    steps = plan.get("steps")
+
+    if not isinstance(steps,list) or not steps:
+        return False
+    
+    return all(
+        isinstance(step,str) and bool(step.strip())
+        for step in steps
+    )
+
 def calculator(a, b, operation="add"):
     operations = {
         "add": lambda x, y: x + y,
@@ -50,6 +64,7 @@ class AgentState:
         self.last_action = None
         self.observations = []
         self.final_answer = None
+        self.current_plan = None
 
     def increment_step(self):
         self.steps += 1
@@ -63,6 +78,8 @@ class AgentState:
         self.last_action = None
         self.observations = []
         self.final_answer = None
+        self.current_plan = None
+
 
     def to_dict(self):
         return {
@@ -71,6 +88,7 @@ class AgentState:
             "last_action": self.last_action,
             "observations":self.observations.copy(),
             "final_answer": self.final_answer,
+            "current_plan": self.current_plan,
         }
 
 
@@ -195,6 +213,61 @@ Response (JSON only):"""
                 return parsed
             
         return None
+
+    def create_plan(self,goal):
+        self.state.current_plan = None
+
+        prompt = f"""{self.system_prompt}
+
+Create a clear step-by-step plan for the following goal.
+
+CRITICAL INSTRUCTIONS:
+1. Respond with ONLY valid JSON
+2. Do not include explanations or markdown
+3. Every step must be a non-empty string
+
+Required JSON format:
+{{"steps": ["step 1", "step 2", "step 3"]}}
+
+Goal:
+{goal}
+
+Response (JSON only):"""
+        for _ in range(3):
+            response = self.llm.generate(
+                prompt,
+                temperature=0.0,
+                stop=["</s>", "User:", "Assistant:"],
+            )
+
+            plan = extract_json_from_text(response)
+
+            if validate_plan(plan):
+                self.state.current_plan = plan
+                return plan
+            
+        return None
+    
+    def execute_plan(self,plan):
+        self.state.steps = 0
+
+        if not validate_plan(plan):
+            return []
+
+        results = []
+
+        for step in plan["steps"]:
+            self.state.increment_step()
+
+            result = {
+                "step": step,
+                "executed": True,
+                "step_number": self.state.steps,
+            }
+
+            results.append(result)
+        
+        return results
     
     def run_with_memory(self,user_input):
         memory_items = self.memory.get_all()
@@ -847,6 +920,116 @@ def run_stage_5_real_model_demo():
     )
 
     print("Stage 5 real model demo passed") 
+
+def run_stage_6_deterministic_checks():
+    class ScriptedLLM:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+
+        def generate(
+            self,
+            prompt,
+            temperature=None,
+            stop=None,
+        ):
+            return next(self.responses)
+
+    def make_agent(responses):
+        agent = object.__new__(SimpleAgent)
+        agent.llm = ScriptedLLM(responses)
+        agent.state = AgentState()
+        agent.system_prompt = "Test agent"
+        return agent
+
+    planning_agent = make_agent([
+        '{"steps": []}',
+        (
+            '{"steps": ['
+            '"Research AI agents", '
+            '"Write study notes"'
+            ']}'
+        ),
+    ])
+
+    plan = planning_agent.create_plan(
+        "Learn how AI agents work"
+    )
+
+    assert plan == {
+        "steps": [
+            "Research AI agents",
+            "Write study notes",
+        ]
+    }
+
+    assert planning_agent.state.current_plan == plan
+
+    results = planning_agent.execute_plan(plan)
+
+    assert results == [
+        {
+            "step": "Research AI agents",
+            "executed": True,
+            "step_number": 1,
+        },
+        {
+            "step": "Write study notes",
+            "executed": True,
+            "step_number": 2,
+        },
+    ]
+
+    assert planning_agent.state.steps == 2
+
+    invalid_agent = make_agent([
+        "not json",
+        "still not json",
+        '{"steps": "wrong"}',
+    ])
+
+    invalid_plan = invalid_agent.create_plan(
+        "An invalid test goal"
+    )
+
+    assert invalid_plan is None
+    assert invalid_agent.state.current_plan is None
+    assert invalid_agent.execute_plan(None) == []
+    assert invalid_agent.state.steps == 0
+
+    print("Stage 6 deterministic checks passed")
+
+def run_stage_6_real_model_demo():
+    agent = SimpleAgent(
+        "models/llama-3-8b-instruct.gguf"
+    )
+
+    goal = (
+        "Create a short beginner tutorial "
+        "about AI agents."
+    )
+
+    plan = agent.create_plan(goal)
+
+    print("Generated plan:")
+    print(plan)
+
+    assert validate_plan(plan)
+    assert agent.state.current_plan == plan
+
+    results = agent.execute_plan(plan)
+
+    print("\nExecution results:")
+
+    for result in results:
+        print(result)
+
+    print("\nAgent state:")
+    print(agent.state.to_dict())
+
+    assert len(results) == len(plan["steps"])
+    assert agent.state.steps == len(plan["steps"])
+
+    print("\nStage 6 real model demo passed")
 
 if __name__ == "__main__":
     agent = SimpleAgent(
